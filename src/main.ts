@@ -1341,14 +1341,11 @@ async function confirmDelete(): Promise<void> {
 
 filesPanel.addEventListener("keydown", (ev) => {
   const target = ev.target as HTMLElement;
-  // The path editor keeps its own arrow / delete behaviour.
+  // The path editor keeps its own arrow-key behaviour.
   if (target.closest("input, textarea, select")) return;
   if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
     ev.preventDefault();
     stepFile(ev.key === "ArrowDown" ? 1 : -1);
-  } else if (ev.key === "Delete") {
-    ev.preventDefault();
-    requestDelete();
   }
 });
 filesPanel.addEventListener("click", (ev) => {
@@ -1540,6 +1537,29 @@ window.addEventListener("keydown", (ev) => {
   } else if (ev.ctrlKey && (ev.key === "b" || ev.key === "B")) {
     ev.preventDefault();
     toggleFiles();
+  } else if (
+    ev.key === "Delete" &&
+    !editMode &&
+    !ev.ctrlKey &&
+    !ev.metaKey &&
+    !ev.altKey
+  ) {
+    // In reading mode Delete works anywhere: reader area or file list.
+    const target = ev.target as HTMLElement;
+    const typing =
+      target instanceof HTMLElement &&
+      (target.closest("input, textarea, select") !== null ||
+        target.isContentEditable);
+    const overlayOpen =
+      !deleteModal.hidden ||
+      !closeModal.hidden ||
+      !settingsModal.hidden ||
+      !aboutModal.hidden ||
+      !diagramModal.hidden;
+    if (!typing && !overlayOpen && currentPath) {
+      ev.preventDefault();
+      requestDelete();
+    }
   } else if (ev.key === "Escape" && !deleteModal.hidden) {
     hideDeleteModal();
   } else if (ev.key === "Escape" && !diagramModal.hidden) {
