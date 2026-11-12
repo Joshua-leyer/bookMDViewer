@@ -6,7 +6,7 @@ import DOMPurify from "dompurify";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalSize } from "@tauri-apps/api/dpi";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -1585,12 +1585,14 @@ content.addEventListener("click", (ev) => {
 });
 
 // ---------- Window size persistence ----------
-// macOS is single-instance and, when a window's Space is re-activated, the OS
-// sometimes resizes it to fill the screen. We remember the user's size and
-// restore it on focus so switching desktops keeps the chosen width.
+// We persist the window's *normal* geometry plus a maximized flag. The app only
+// applies this state once at launch; it never resizes the window while running,
+// so maximizing, snapping, dragging across monitors or switching apps all keep
+// whatever the OS and the user chose.
 interface WinSize {
   width: number;
   height: number;
+  maximized: boolean;
 }
 // Matches the window's minWidth/minHeight in tauri.conf.json. Sizes below this
 // are degenerate (e.g. the OS reports 0×0 while minimized) and must never be
@@ -1609,69 +1611,69 @@ function loadWinSize(): WinSize | null {
   try {
     const s = JSON.parse(localStorage.getItem("winSize") ?? "null");
     // Reject degenerate stored values so an upgrade auto-heals a corrupt size.
-    return s && isSaneSize(s.width, s.height)
-      ? { width: s.width, height: s.height }
-      : null;
+    if (!s || !isSaneSize(s.width, s.height)) return null;
+    // Older versions stored only `{width, height}`; treat those as unmaximized.
+    return { width: s.width, height: s.height, maximized: s.maximized === true };
   } catch {
     return null;
   }
 }
-function saveWinSize(width: number, height: number): void {
-  // Never persist a minimized / degenerate size.
-  if (!isSaneSize(width, height)) return;
+function storeWinSize(state: WinSize): void {
   localStorage.setItem(
     "winSize",
-    JSON.stringify({ width: Math.round(width), height: Math.round(height) }),
+    JSON.stringify({
+      width: Math.round(state.width),
+      height: Math.round(state.height),
+      maximized: state.maximized,
+    }),
   );
 }
 
-let suppressWinSaveUntil = 0;
 let winSaveTimer: number | undefined;
-let monitorWidth = 0; // cached (physical px) so the resize handler stays sync
 
-async function refreshMonitorWidth(): Promise<void> {
+/// Record the current window state. While maximized, the resize event reports
+/// the maximized geometry, which is not what we want to restore to — keep the
+/// previously saved normal size and only flip the flag.
+async function rememberWindowState(width: number, height: number): Promise<void> {
+  let maximized = false;
   try {
-    const m = await currentMonitor();
-    if (m) monitorWidth = m.size.width;
+    maximized = await appWindow.isMaximized();
   } catch {
     /* ignore */
   }
+  const previous = loadWinSize();
+  storeWinSize(
+    maximized
+      ? {
+          width: previous?.width ?? width,
+          height: previous?.height ?? height,
+          maximized: true,
+        }
+      : { width, height, maximized: false },
+  );
 }
 
 async function setupWindowSize(): Promise<void> {
-  await refreshMonitorWidth();
-
-  // Restore the last size on launch.
+  // Apply the remembered state once, at launch.
   const saved = loadWinSize();
   if (saved) {
     try {
-      await appWindow.setSize(new PhysicalSize(saved.width, saved.height));
+      if (saved.maximized) await appWindow.maximize();
+      else await appWindow.setSize(new PhysicalSize(saved.width, saved.height));
     } catch {
       /* ignore */
     }
   }
 
-  // Persist user resizes (debounced). Skips saving while suppressed and ignores
-  // a width that fills the monitor — that's the Spaces-switch jump, not a drag.
+  // Persist user resizes (debounced). Degenerate 0×0 sizes reported while
+  // minimized are ignored.
   await appWindow.onResized(({ payload }) => {
-    if (Date.now() < suppressWinSaveUntil) return;
-    if (monitorWidth && payload.width >= monitorWidth - 2) return;
-    // Ignore minimized / degenerate sizes (0×0 etc.) — saveWinSize also guards.
     if (!isSaneSize(payload.width, payload.height)) return;
     const { width, height } = payload;
     window.clearTimeout(winSaveTimer);
-    winSaveTimer = window.setTimeout(() => saveWinSize(width, height), 300);
-  });
-
-  // On regaining focus (e.g. switching back to this Space), restore the saved
-  // size and briefly suppress saving so the OS resize can't overwrite it.
-  await appWindow.onFocusChanged(({ payload: focused }) => {
-    if (!focused) return;
-    void refreshMonitorWidth();
-    const s = loadWinSize();
-    if (!s) return;
-    suppressWinSaveUntil = Date.now() + 600;
-    void appWindow.setSize(new PhysicalSize(s.width, s.height));
+    winSaveTimer = window.setTimeout(() => {
+      void rememberWindowState(width, height);
+    }, 300);
   });
 }
 
