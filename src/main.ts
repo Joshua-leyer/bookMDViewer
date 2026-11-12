@@ -1510,6 +1510,27 @@ function toggleToc(): void {
   layout.classList.toggle("toc-collapsed");
 }
 tocToggle.addEventListener("click", toggleToc);
+// Plain (unmodified) keys that act on the open document should only fire while
+// reading: not editing, not typing into a field, and no modal on screen.
+function canUseReaderShortcut(ev: KeyboardEvent): boolean {
+  if (editMode || ev.ctrlKey || ev.metaKey || ev.altKey) return false;
+  const target = ev.target as HTMLElement;
+  if (
+    target instanceof HTMLElement &&
+    (target.closest("input, textarea, select") !== null ||
+      target.isContentEditable)
+  ) {
+    return false;
+  }
+  const overlayOpen =
+    !deleteModal.hidden ||
+    !closeModal.hidden ||
+    !settingsModal.hidden ||
+    !aboutModal.hidden ||
+    !diagramModal.hidden;
+  return !overlayOpen && currentPath !== null;
+}
+
 window.addEventListener("keydown", (ev) => {
   if (ev.ctrlKey && (ev.key === "\\" || ev.key === "|")) {
     // Shift turns "\" into "|" on many layouts; treat both as the same chord.
@@ -1539,27 +1560,19 @@ window.addEventListener("keydown", (ev) => {
     toggleFiles();
   } else if (
     ev.key === "Delete" &&
-    !editMode &&
-    !ev.ctrlKey &&
-    !ev.metaKey &&
-    !ev.altKey
+    canUseReaderShortcut(ev)
   ) {
     // In reading mode Delete works anywhere: reader area or file list.
-    const target = ev.target as HTMLElement;
-    const typing =
-      target instanceof HTMLElement &&
-      (target.closest("input, textarea, select") !== null ||
-        target.isContentEditable);
-    const overlayOpen =
-      !deleteModal.hidden ||
-      !closeModal.hidden ||
-      !settingsModal.hidden ||
-      !aboutModal.hidden ||
-      !diagramModal.hidden;
-    if (!typing && !overlayOpen && currentPath) {
-      ev.preventDefault();
-      requestDelete();
-    }
+    ev.preventDefault();
+    requestDelete();
+  } else if (
+    /^[dDfF]$/.test(ev.key) &&
+    !ev.shiftKey &&
+    canUseReaderShortcut(ev)
+  ) {
+    // Reading-mode shortcuts: d = previous file, f = next file.
+    ev.preventDefault();
+    stepFile(ev.key === "d" || ev.key === "D" ? -1 : 1);
   } else if (ev.key === "Escape" && !deleteModal.hidden) {
     hideDeleteModal();
   } else if (ev.key === "Escape" && !diagramModal.hidden) {
